@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Binance USD-M TESTNET Paper Bot</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0b0f14;color:#e5e7eb}
+    header{padding:12px 16px;background:#0f172a;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #1f2937}
+    .wrap{display:grid;grid-template-columns:420px 1fr;gap:12px;padding:12px}
+    .card{background:#0f172a;border:1px solid #1f2937;border-radius:10px;padding:12px}
+    .row{display:flex;gap:8px;flex-wrap:wrap}
+    button{background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:8px 10px;cursor:pointer}
+    button:hover{border-color:#6b7280}
+    .ok{color:#22c55e} .bad{color:#ef4444} .muted{color:#94a3b8}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    th,td{border-bottom:1px solid #1f2937;padding:6px 6px;text-align:left}
+    th{color:#a3b3c2;font-weight:600}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+    .small{font-size:12px}
+    canvas{width:100%;height:180px;background:#0b1220;border-radius:8px;border:1px solid #1f2937}
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <div style="font-weight:700">Binance USD‑M Futures TESTNET — Paper Bot</div>
+    <div class="muted small">Dashboard: WebSocket /ws/dashboard • REST: /api/*</div>
+  </div>
+  <div class="row">
+    <button onclick="botStart()">Start</button>
+    <button onclick="botStop()">Stop</button>
+    <button onclick="botReset()">Reset</button>
+    <button onclick="clearKill()">Clear Kill</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <div style="font-weight:700;margin-bottom:8px">Connectivity</div>
+    <div id="conn" class="mono small">—</div>
+    <hr style="border:none;border-top:1px solid #1f2937;margin:12px 0"/>
+    <div style="font-weight:700;margin-bottom:8px">Market</div>
+    <div id="market" class="mono small">—</div>
+    <hr style="border:none;border-top:1px solid #1f2937;margin:12px 0"/>
+    <div style="font-weight:700;margin-bottom:8px">Account</div>
+    <div id="acct" class="mono small">—</div>
+    <hr style="border:none;border-top:1px solid #1f2937;margin:12px 0"/>
+    <div style="font-weight:700;margin-bottom:8px">KPI</div>
+    <div id="kpi" class="mono small">—</div>
+    <hr style="border:none;border-top:1px solid #1f2937;margin:12px 0"/>
+    <div style="font-weight:700;margin-bottom:8px">Stats</div>
+    <div id="stats" class="mono small">—</div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div style="font-weight:700">Equity</div>
+      <div id="ws" class="mono small muted">WS: —</div>
+    </div>
+    <canvas id="eq"></canvas>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+      <div class="card" style="margin:0">
+        <div style="font-weight:700;margin-bottom:8px">Top of Book</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <div class="muted small">Bids</div>
+            <table id="bids"><thead><tr><th>Price</th><th>Qty</th></tr></thead><tbody></tbody></table>
+          </div>
+          <div>
+            <div class="muted small">Asks</div>
+            <table id="asks"><thead><tr><th>Price</th><th>Qty</th></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin:0">
+        <div style="font-weight:700;margin-bottom:8px">Orders</div>
+        <table id="orders"><thead><tr><th>Time</th><th>Side</th><th>Price</th><th>Qty</th><th>Filled</th><th>Status</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <div style="font-weight:700;margin-bottom:8px">Recent Trades (tape)</div>
+      <table id="tape"><thead><tr><th>Time</th><th>Side</th><th>Price</th><th>Qty</th></tr></thead><tbody></tbody></table>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <div style="font-weight:700;margin-bottom:8px">Closed Trades</div>
+      <table id="closed"><thead><tr><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Fees</th><th>Hold ms</th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+</div>
+
+<script>
+let ws;
+let lastSnap = null;
+
+function fmt(x, d=2){
+  if(x === null || x === undefined) return "—";
+  if(typeof x === "number") return x.toFixed(d);
+  return String(x);
+}
+
+function pct(x, d=1){
+  if(x === null || x === undefined) return "—";
+  if(typeof x !== "number") return String(x);
+  return (x*100).toFixed(d) + "%";
+}
+
+
+function ts(ms){
+  if(!ms) return "—";
+  const d = new Date(ms);
+  return d.toLocaleTimeString();
+}
+
+function setText(id, txt){ document.getElementById(id).textContent = txt; }
+
+function drawEquity(chart){
+  const canvas = document.getElementById("eq");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width = canvas.clientWidth * devicePixelRatio;
+  const h = canvas.height = canvas.clientHeight * devicePixelRatio;
+
+  ctx.clearRect(0,0,w,h);
+
+  if(!chart || !chart.equity || chart.equity.length < 2) return;
+
+  const ys = chart.equity;
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const pad = (maxY - minY) * 0.05 || 1;
+  const y0 = minY - pad;
+  const y1 = maxY + pad;
+
+  ctx.beginPath();
+  for(let i=0;i<ys.length;i++){
+    const x = (i/(ys.length-1)) * (w-20) + 10;
+    const y = h - ((ys[i]-y0)/(y1-y0))*(h-20) - 10;
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.lineWidth = 2*devicePixelRatio;
+  ctx.strokeStyle = "#22c55e";
+  ctx.stroke();
+}
+
+function renderTable(id, rows, rowToCells, limit=25){
+  const tb = document.querySelector(`#${id} tbody`);
+  tb.innerHTML = "";
+  rows.slice(0,limit).forEach(r=>{
+    const tr = document.createElement("tr");
+    rowToCells(r).forEach(c=>{
+      const td = document.createElement("td");
+      td.textContent = c;
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  });
+}
+
+function updateUI(s){
+  lastSnap = s;
+  const c = s.connectivity;
+
+  const connLine = [
+    `ws_connected=${c.ws_connected} reconnects=${c.ws_reconnects}`,
+    `ws_age_ms=${fmt(c.ws_last_event_age_ms,0)} book_age_ms=${fmt(c.book_last_update_age_ms,0)}`,
+    `resyncs=${c.book_resyncs} failures=${c.book_resync_failures}`,
+    `bot_running=${c.bot_running} kill_switch=${c.kill_switch} reason=${c.kill_reason||""}`,
+  ].join("\n");
+  setText("conn", connLine);
+
+  const m = s.market;
+  const mLine = [
+    `bid=${fmt(m.best_bid,2)} ask=${fmt(m.best_ask,2)} spread=${fmt(m.spread,2)}`,
+    `mid=${fmt(m.mid,2)} micro=${fmt(m.microprice,2)}`,
+    `imb=${fmt(m.imbalance,3)} pressure=${fmt(m.trade_pressure,3)} vol=${fmt(m.volatility,6)}`,
+    `mark=${fmt(m.mark_price,2)} tick=${fmt(m.tick_size,4)}`
+  ].join("\n");
+  setText("market", mLine);
+
+  const a = s.account;
+  const aLine = [
+    `equity=${fmt(a.equity_usdt,2)} cash=${fmt(a.cash_balance_usdt,2)}`,
+    `pos=${fmt(a.position_qty,6)} avg=${fmt(a.avg_entry_price,2)}`,
+    `uPnL=${fmt(a.unrealized_pnl_usdt,2)} rPnL=${fmt(a.realized_pnl_usdt,2)} fees=${fmt(a.fees_paid_usdt,2)}`
+  ].join("\n");
+  setText("acct", aLine);
+
+  const st = s.stats || {};
+
+  // Phase 1 KPI (separate block): cost of trading + cadence + liveness
+  const kpiLine = [
+    `heartbeat_ok=${st.heartbeat_ok?"true":"false"} last_step_ts_ms=${fmt(st.last_step_ts_ms,0)} loop_dt_ms=${fmt(st.loop_dt_ms,0)} ws_lag_ms=${fmt(st.ws_lag_ms,0)}`,
+    `fees_total=${fmt(st.fees_paid_total,2)} fees_5m=${fmt(st.fees_5m,2)} fees_1h=${fmt(st.fees_1h,2)}`,
+    `turnover_total=${fmt(st.turnover_total,2)} turnover_5m=${fmt(st.turnover_5m,2)} turnover_1h=${fmt(st.turnover_1h,2)}`,
+    `trades_1h=${fmt(st.trades_1h,0)} trades_1d=${fmt(st.trades_1d,0)} avg_hold_1d_ms=${fmt(st.avg_hold_ms_1d,0)}`,
+    `fills_5m=${fmt(st.fills_5m,0)} cancels_5m=${fmt(st.cancels_5m,0)} rejects_5m=${fmt(st.rejects_5m,0)}`,
+    `cancel_rate_5m=${pct(st.cancel_rate_5m)} reject_rate_5m=${pct(st.reject_rate_5m)}`,
+    `entry_attempts_5m=${fmt(st.entry_attempts_5m,0)} entry_fills_5m=${fmt(st.entry_fills_5m,0)} fill_rate_5m=${pct(st.fill_rate_5m)} ttf_p50_ms=${fmt(st.time_to_fill_p50_ms,0)} ttf_p90_ms=${fmt(st.time_to_fill_p90_ms,0)}`,
+    `ev_gate_open_rate_5m=${pct(st.ev_gate_open_rate_5m)} pnl_1h_after_fees=${fmt(st.pnl_1h_after_fees,2)}`,
+    `autotune_en=${st.autotune_enabled?"true":"false"} action=${st.autotune_action||""} reason=${st.autotune_reason||""}`,
+    `params_live off_adj=${fmt(st.autotune_offset_adj_ticks,0)} cd_ms=${fmt(st.autotune_entry_cooldown_ms,0)} rq_min_ms=${fmt(st.autotune_requote_min_ms,0)} min_edge_mult_live=${fmt(st.min_edge_mult_live,2)}`,
+    `trading_enabled=${st.trading_enabled?"true":"false"} pause_left_ms=${fmt(Math.max(0,(st.pause_until_ms||0)-(s.ts_ms||0)),0)} pause_reason=${st.pause_reason||""}`,
+    `inactive=${st.inactive_reason||""} top=${(st.inactive_top_factors||[]).join(",")} fix=${st.inactive_suggested_fix||""}`,
+    `gate_state=${st.gate_state||""} reason=${st.no_trade_reason||""}`,
+  ].join("\n");
+  setText("kpi", kpiLine);
+
+  const stLine = [
+    `win_rate=${pct(st.win_rate)} profit_factor=${fmt(st.profit_factor,2)}`,
+    `trades=${fmt(st.trades_n,0)} net=${fmt(st.net_pnl_sum,2)} (L=${fmt(st.net_pnl_long_sum,2)} S=${fmt(st.net_pnl_short_sum,2)}) avg=${fmt(st.avg_pnl_per_trade,3)} hold_ms=${fmt(st.avg_hold_ms,0)}`,
+    `fills_1m=${fmt(st.fills_1m,0)} cancels_1m=${fmt(st.cancels_1m,0)} rejects_1m=${fmt(st.rejects_1m,0)} c/f=${fmt(st.cancel_fill_ratio,2)}`,
+    `fillQ250 n=${fmt(st.fq_250_n,0)} mean_ticks=${fmt(st.fq_250_mean_ticks,3)} hit=${pct(st.fq_250_hit_rate)} (buy=${fmt(st.fq_250_mean_ticks_buy,3)} sell=${fmt(st.fq_250_mean_ticks_sell,3)})`,
+    `fillQ500 n=${fmt(st.fq_500_n,0)} mean_ticks=${fmt(st.fq_500_mean_ticks,3)} hit=${pct(st.fq_500_hit_rate)} (buy=${fmt(st.fq_500_mean_ticks_buy,3)} sell=${fmt(st.fq_500_mean_ticks_sell,3)})`,
+    `fillQ1000 n=${fmt(st.fq_1000_n,0)} mean_ticks=${fmt(st.fq_1000_mean_ticks,3)} hit=${pct(st.fq_1000_hit_rate)} (buy=${fmt(st.fq_1000_mean_ticks_buy,3)} sell=${fmt(st.fq_1000_mean_ticks_sell,3)})`,
+    `ml p_up=${fmt(st.ml_p_up,3)} edge=${fmt(st.ml_edge,3)} h=${fmt(st.ml_h,0)} n=${fmt(st.ml_n,0)} arm=${st.bandit_arm||""} eps=${fmt(st.bandit_eps,3)}`,
+    `fee_ticks=${fmt(st.fee_ticks,0)} min_inside_ticks=${fmt(st.min_inside_ticks,0)} gate_ticks=${fmt(st.gate_ticks,0)} inside_used=${fmt(st.inside_used,0)} regime=${st.regime_state||""}`,
+    `regime_v2 state=${st.regime_state||""} trend=${fmt(st.regime_trend_strength,2)} chop=${fmt(st.regime_chop_score,2)} toxic=${fmt(st.regime_toxic_score,2)} eff=${fmt(st.regime_eff_ratio,2)} edge_mult=${fmt(st.regime_edge_mult,2)} off_add=${fmt(st.regime_offset_add_ticks,0)} min_edge_eff=${fmt(st.min_edge_mult_effective,2)} sp_med=${fmt(st.regime_spread_med,2)} vol_med=${fmt(st.regime_vol_med,2)}`,
+    `trail en=${st.trail_enabled?"1":"0"} act=${fmt(st.trail_activate_ticks,0)} peak=${fmt(st.trail_peak_ticks,0)} retr=${fmt(st.trail_retrace_ticks,0)} trig=${fmt(st.trail_trigger_level_ticks,0)} dlt=${fmt(st.pos_delta_ticks,0)} active=${st.trail_active?"1":"0"}`,
+    `mode=${st.mode||""} symbol=${st.symbol||""} reason=${st.no_trade_reason||""} gate=${st.gate_state||""} swing(dir=${fmt(st.swing_dir,0)} str=${fmt(st.swing_strength,2)} edge=${fmt(st.swing_edge_ticks,1)}) entry(off=${fmt(st.entry_offset_ticks,0)} px=${fmt(st.entry_price,2)}) tp=${fmt(st.tp_ticks,0)} sl=${fmt(st.sl_ticks,0)} hold=${fmt(st.hold_ms,0)}/${fmt(st.max_hold_ms,0)} cd_ms=${fmt(st.entry_cooldown_left_ms,0)} exit=${st.exit_reason||""} cap_hit=${st.cap_hit?"1":"0"}`,
+    `qty_calc=${fmt(st.qty_calc,6)} qty_used=${fmt(st.qty_used,6)} risk_usdt=${fmt(st.risk_usdt,2)} max_notional=${fmt(st.max_notional,2)} max_qty=${fmt(st.max_qty,6)}`,
+
+    `size_mult=${fmt(st.size_mult,2)} base_seed_qty=${fmt(st.base_seed_qty,6)} base_notional_pct=${pct(st.base_notional_pct)} side_mult(b=${fmt(st.side_mult_buy,2)} s=${fmt(st.side_mult_sell,2)}) dd=${pct(st.dd_now)} cap=${pct(st.max_notional_pct)} max_notional=${fmt(st.max_notional,2)} max_entry_qty=${fmt(st.max_entry_qty,6)}`,
+    `side_ctl gate(b=${fmt(st.side_gate_buy,2)} s=${fmt(st.side_gate_sell,2)}) inside_adj(b=${fmt(st.side_inside_adj_buy,0)} s=${fmt(st.side_inside_adj_sell,0)}) pnl_avg(b=${fmt(st.side_pnl_avg_buy,3)} s=${fmt(st.side_pnl_avg_sell,3)}) n(b=${fmt(st.side_trades_buy,0)} s=${fmt(st.side_trades_sell,0)}) fq_n=${fmt(st.side_fq_n,0)}`,
+    `max_dd=${fmt(st.max_drawdown,2)}`
+  ].join("\n");
+  setText("stats", stLine);
+
+  setText("ws", `WS dashboard: ${ws && ws.readyState===1 ? "OPEN" : "—"}`);
+
+  // top book
+  renderTable("bids", m.bids || [], r => [fmt(r[0],2), fmt(r[1],4)], 10);
+  renderTable("asks", m.asks || [], r => [fmt(r[0],2), fmt(r[1],4)], 10);
+
+  // orders
+  renderTable("orders", (s.orders||[]), r => [
+    ts(r.ts_ms), r.side, fmt(r.price,2), fmt(r.qty,6), fmt(r.filled_qty,6), r.status
+  ], 25);
+
+  // tape
+  renderTable("tape", (m.trades||[]), r => [
+    ts(r.ts_ms), r.side, fmt(r.price,2), fmt(r.qty,4)
+  ], 25);
+
+  // closed
+  renderTable("closed", (s.closed_trades||[]), r => [
+    r.side, fmt(r.qty,6), fmt(r.entry_price,2), fmt(r.exit_price,2),
+    fmt(r.realized_pnl_usdt - r.fees_usdt,2), fmt(r.fees_usdt,2), fmt(r.exit_ts_ms - r.entry_ts_ms,0)
+  ], 25);
+
+  drawEquity(s.charts);
+}
+
+async function apiPost(path){
+  await fetch(path, {method:"POST"});
+}
+
+async function botStart(){ await apiPost("/api/bot/start"); }
+async function botStop(){ await apiPost("/api/bot/stop"); }
+async function botReset(){ await apiPost("/api/bot/reset"); }
+async function clearKill(){ await apiPost("/api/bot/clear_kill"); }
+
+function connectWS(){
+  ws = new WebSocket(`ws://${location.host}/ws/dashboard`);
+  ws.onopen = () => setText("ws", "WS dashboard: OPEN");
+  ws.onclose = () => { setText("ws", "WS dashboard: CLOSED"); setTimeout(connectWS, 1000); };
+  ws.onerror = () => { /* ignore */ };
+  ws.onmessage = ev => {
+    let data = null;
+    try {
+      data = JSON.parse(ev.data);
+    } catch (e) {
+      console.error("WS JSON parse error", e, ev.data);
+      return;
+    }
+    try {
+      updateUI(data);
+    } catch (e) {
+      console.error("updateUI error", e, data);
+      try { setText("ws", "WS dashboard: ERROR (see console)"); } catch(_){}
+    }
+  };
+}
+
+connectWS();
+</script>
+</body>
+</html>
+
